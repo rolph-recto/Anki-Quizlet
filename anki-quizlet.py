@@ -13,6 +13,7 @@
 __window = None
 
 import sys
+import math
 import time
 import datetime as dt
 import urllib as url
@@ -39,6 +40,17 @@ class QuizletWindow(QWidget):
     """main window of Quizlet plugin; shows search results"""
     def __init__(self):
         super(QuizletWindow, self).__init__()
+
+        self.results = None
+        self.thread = None
+        self.name = ""
+        self.user = ""
+        self.result_page = -1
+
+        self.initGUI()
+
+    def initGUI(self):
+        """create the GUI skeleton"""
 
         self.box_top = QVBoxLayout()
         self.box_upper = QHBoxLayout()
@@ -91,15 +103,15 @@ class QuizletWindow(QWidget):
         self.box_sortorder = QHBoxLayout()
         self.label_sortorder = QLabel("Sort order:", self)
         self.buttongroup_sortorder = QButtonGroup()
-        self.radio_ascending = QRadioButton("Ascending", self)
         self.radio_descending = QRadioButton("Descending", self)
-        self.radio_ascending.setChecked(True)
+        self.radio_ascending = QRadioButton("Ascending", self)
+        self.radio_descending.setChecked(True)
         self.buttongroup_sortorder.addButton(self.radio_ascending)
         self.buttongroup_sortorder.addButton(self.radio_descending)
 
         self.box_sortorder.addWidget(self.label_sortorder)
-        self.box_sortorder.addWidget(self.radio_ascending)
         self.box_sortorder.addWidget(self.radio_descending)
+        self.box_sortorder.addWidget(self.radio_ascending)
         self.box_sortorder.addStretch(1)
 
         #search button
@@ -152,6 +164,12 @@ class QuizletWindow(QWidget):
         self.box_tablenav.addWidget(self.button_last)
         self.box_tablenav.addStretch(1)
 
+        self.button_first.clicked.connect(self.onPageFirst)
+        self.button_previous.clicked.connect(self.onPagePrevious)
+        self.button_current.clicked.connect(self.onPageCurrent)
+        self.button_next.clicked.connect(self.onPageNext)
+        self.button_last.clicked.connect(self.onPageLast)
+
         #results label
         self.label_results = QLabel("")
 
@@ -159,6 +177,7 @@ class QuizletWindow(QWidget):
         self.table_results = QTableWidget(2, 4, self)
         self.table_results.setHorizontalHeaderLabels(["Name", "User",
             "Items", "Date modified"])
+        self.table_results.verticalHeader().hide()
         self.table_results.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_results.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_results.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -189,39 +208,54 @@ class QuizletWindow(QWidget):
         self.setLayout(self.box_top)
 
         self.setMinimumWidth(500)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.setWindowTitle("Import from Quizlet")
         self.show()
 
-        self.results = None
-
     def onSearch(self):
         """user clicked search button; load first page of results"""
+        self.name = self.text_name.text()
+        self.user = self.text_user.text()
         self.fetchResults()
 
     def onPageFirst(self):
         """first page button clicked"""
-        self.onChangePage(QuizletWindow.PAGE_FIRST)
+        self.__changePage(QuizletWindow.PAGE_FIRST)
 
     def onPagePrevious(self):
         """first page button clicked"""
-        self.onChangePage(QuizletWindow.PAGE_PREVIOUS)
+        self.__changePage(QuizletWindow.PAGE_PREVIOUS)
+
+
+    def onPageCurrent(self):
+        """let user jump to any page"""
+        page, ok = QInputDialog.getInteger(self, "Jump to Page",
+            "What page? ({0} - {1})".format(1, self.results["total_pages"]),
+            1, 1, self.results["total_pages"])
+
+        if ok:
+            self.fetchResults(page)
 
     def onPageNext(self):
         """first page button clicked"""
-        self.onChangePage(QuizletWindow.PAGE_NEXT)
+        self.__changePage(QuizletWindow.PAGE_NEXT)
 
     def onPageLast(self):
         """first page button clicked"""
-        self.onChangePage(QuizletWindow.PAGE_LAST)
+        self.__changePage(QuizletWindow.PAGE_LAST)
 
-    def onPageCurrent(self):
-        """first page button clicked"""
-        self.onChangePage(QuizletWindow.PAGE_FIRST)
-
-    def onChangePage(self, change):
+    def __changePage(self, change):
         """determine what page to fetch"""
-        pass
-
+        if change == QuizletWindow.PAGE_FIRST:
+            self.fetchResults(1)
+        elif change == QuizletWindow.PAGE_PREVIOUS:
+            if self.result_page - 1 >= 1:
+                self.fetchResults(self.result_page-1)
+        elif change == QuizletWindow.PAGE_NEXT:
+            if self.result_page + 1 <= self.results["total_pages"]:
+                self.fetchResults(self.result_page+1)
+        elif change == QuizletWindow.PAGE_LAST:
+            self.fetchResults( self.results["total_pages"] )
 
     def showTable(self, show=True):
         """set results table visible/invisible"""
@@ -243,22 +277,27 @@ class QuizletWindow(QWidget):
         self.table_results.setRowCount(0)
         deckList = self.results["sets"]
 
+        #iterate through the decks and add them to the table
         for index in range(len(deckList)):
             if index+1 > self.table_results.rowCount():
                 self.table_results.insertRow(index)
 
+            #deck name
             name = QTableWidgetItem(deckList[index]["title"])
             name.setToolTip(deckList[index]["title"])
             self.table_results.setItem(index, 0, name)
 
+            #user who created deck
             user = QTableWidgetItem(deckList[index]["created_by"])
             user.setToolTip(deckList[index]["created_by"])
             self.table_results.setItem(index, 1, user)
 
+            #number of items in the deck
             items = QTableWidgetItem(str(deckList[index]["term_count"]))
             items.setToolTip(str(deckList[index]["term_count"]))
             self.table_results.setItem(index, 2, items)
 
+            #last date that the deck was modified
             date_str = time.strftime("%m/%d/%Y",
                 time.localtime(deckList[index]["modified_date"]))
             date = QTableWidgetItem(date_str)
@@ -268,37 +307,41 @@ class QuizletWindow(QWidget):
     def fetchResults(self, page=1):
         """load results"""
         global __APIKEY
+
         self.results = None
-        name = self.text_name.text()
-        user = self.text_user.text()
-
         self.hideTable()
-
-        self.label_results.setText("Searching for \"{0}\" ...".format(name))
+        self.label_results.setText("Searching for \"{0}\" ..."
+            .format(self.name))
 
         #build search URL
-        if not user == "":
+        if not self.user == "":
             search_url = ("https://api.quizlet.com/2.0/search/sets"
                   "?q={0}"
                   "&creator={1}"
                   "&page={2}"
                   "&per_page={3}"
-                  "&client_id={4}").format(name, user, page,
-                  QuizletWindow.RESULTS_PER_PAGE, QuizletWindow.__APIKEY)
+                  "&client_id={4}")
         else:
             search_url = ("https://api.quizlet.com/2.0/search/sets"
                   "?q={0}"
                   "&page={2}"
                   "&per_page={3}"
-                  "&client_id={4}").format(name, user, page,
-                  QuizletWindow.RESULTS_PER_PAGE, QuizletWindow.__APIKEY)
+                  "&client_id={4}")
 
+        search_url = search_url.format(self.name, self.user, page,
+            QuizletWindow.RESULTS_PER_PAGE, QuizletWindow.__APIKEY)
+
+        #stop the previous thread first
+        if not self.thread == None:
+            self.thread.terminate()
+
+        #download the data!
         self.thread = QuizletDownloader(self, search_url)
         self.thread.start()
 
         while not self.thread.isFinished():
             mw.app.processEvents()
-            self.thread.wait(100)
+            self.thread.wait(50)
 
         self.results = self.thread.results
 
@@ -325,6 +368,7 @@ class QuizletWindow(QWidget):
             self.button_current.setText(str(page))
             self.label_results.setText( ("Displaying results {0} - {1} of {2}."
                 .format(first, last, num_results)) )
+            self.table_results.verticalHeader().setOffset(first)
 
 class QuizletDownloader(QThread):
     """thread that downloads results from the Quizlet API"""
@@ -338,8 +382,6 @@ class QuizletDownloader(QThread):
 
     def run(self):
         """run thread; download results!"""
-
-        #fetch the data!
         try:
             self.results = json.loads(url2.urlopen(self.url).read())
         except url2.URLError:
@@ -351,9 +393,7 @@ def runQuizletPlugin():
     global __window
     __window = QuizletWindow()
 
-# create a new menu item, "Import from Quizlet"
+#create menu item
 action = QAction("Import from Quizlet", mw)
-# set it to call function when it's clicked
 mw.connect(action, SIGNAL("triggered()"), runQuizletPlugin)
-# and add it to the tools menu
 mw.form.menuTools.addAction(action)
