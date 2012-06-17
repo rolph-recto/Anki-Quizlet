@@ -29,6 +29,8 @@ from PyQt4.QtGui import *
 from PyQt4.Qt import Qt
 
 class QuizletWindow(QWidget):
+    """main window of Quizlet plugin; shows search results"""
+
     PAGE_FIRST       = 1
     PAGE_PREVIOUS    = 2
     PAGE_NEXT        = 3
@@ -37,7 +39,6 @@ class QuizletWindow(QWidget):
     RESULTS_PER_PAGE = 50
     __APIKEY         = "ke9tZw8YM6" #used to access Quizlet API
 
-    """main window of Quizlet plugin; shows search results"""
     def __init__(self):
         super(QuizletWindow, self).__init__()
 
@@ -45,6 +46,7 @@ class QuizletWindow(QWidget):
         self.thread = None
         self.name = ""
         self.user = ""
+        self.sort = "most_studied"
         self.result_page = -1
 
         self.initGUI()
@@ -87,7 +89,7 @@ class QuizletWindow(QWidget):
         self.buttongroup_sort = QButtonGroup()
         self.radio_popularity = QRadioButton("Popularity", self)
         self.radio_name = QRadioButton("Name", self)
-        self.radio_date = QRadioButton("Date modified", self)
+        self.radio_date = QRadioButton("Date created", self)
         self.radio_popularity.setChecked(True)
         self.buttongroup_sort.addButton(self.radio_popularity)
         self.buttongroup_sort.addButton(self.radio_name)
@@ -98,21 +100,6 @@ class QuizletWindow(QWidget):
         self.box_sort.addWidget(self.radio_name)
         self.box_sort.addWidget(self.radio_date)
         self.box_sort.addStretch(1)
-
-        #sort order
-        self.box_sortorder = QHBoxLayout()
-        self.label_sortorder = QLabel("Sort order:", self)
-        self.buttongroup_sortorder = QButtonGroup()
-        self.radio_descending = QRadioButton("Descending", self)
-        self.radio_ascending = QRadioButton("Ascending", self)
-        self.radio_descending.setChecked(True)
-        self.buttongroup_sortorder.addButton(self.radio_ascending)
-        self.buttongroup_sortorder.addButton(self.radio_descending)
-
-        self.box_sortorder.addWidget(self.label_sortorder)
-        self.box_sortorder.addWidget(self.radio_descending)
-        self.box_sortorder.addWidget(self.radio_ascending)
-        self.box_sortorder.addStretch(1)
 
         #search button
         self.box_search = QHBoxLayout()
@@ -125,7 +112,7 @@ class QuizletWindow(QWidget):
 
         #add layouts to right
         self.box_right.addLayout(self.box_sort)
-        self.box_right.addLayout(self.box_sortorder)
+        self.box_right.addLayout(self.box_search)
 
         #add left and right layouts to upper
         self.box_upper.addLayout(self.box_left)
@@ -143,7 +130,6 @@ class QuizletWindow(QWidget):
         self.button_previous.setMaximumWidth(30)
         self.button_previous.setVisible(False)
 
-        self.result_page = 1
         self.button_current = QPushButton(str(self.result_page), self)
         self.button_current.setMaximumWidth(50)
         self.button_current.setVisible(False)
@@ -176,7 +162,7 @@ class QuizletWindow(QWidget):
         #table of results
         self.table_results = QTableWidget(2, 4, self)
         self.table_results.setHorizontalHeaderLabels(["Name", "User",
-            "Items", "Date modified"])
+            "Items", "Date created"])
         self.table_results.verticalHeader().hide()
         self.table_results.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_results.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -200,11 +186,11 @@ class QuizletWindow(QWidget):
 
         #add all widgets to top layout
         self.box_top.addLayout(self.box_upper)
-        self.box_top.addLayout(self.box_search)
         self.box_top.addLayout(self.box_tablenav)
         self.box_top.addWidget(self.label_results)
         self.box_top.addWidget(self.table_results)
         self.box_top.addLayout(self.box_import)
+        self.box_top.addStretch(1)
         self.setLayout(self.box_top)
 
         self.setMinimumWidth(500)
@@ -216,6 +202,16 @@ class QuizletWindow(QWidget):
         """user clicked search button; load first page of results"""
         self.name = self.text_name.text()
         self.user = self.text_user.text()
+        self.result_page = -1
+
+        #sort
+        if self.buttongroup_sort.checkedButton() == self.radio_popularity:
+            self.sort = "most_studied"
+        elif self.buttongroup_sort.checkedButton() == self.radio_name:
+            self.sort = "title"
+        elif self.buttongroup_sort.checkedButton() == self.radio_date:
+            self.sort = "most_recent"
+
         self.fetchResults()
 
     def onPageFirst(self):
@@ -225,7 +221,6 @@ class QuizletWindow(QWidget):
     def onPagePrevious(self):
         """first page button clicked"""
         self.__changePage(QuizletWindow.PAGE_PREVIOUS)
-
 
     def onPageCurrent(self):
         """let user jump to any page"""
@@ -299,37 +294,54 @@ class QuizletWindow(QWidget):
 
             #last date that the deck was modified
             date_str = time.strftime("%m/%d/%Y",
-                time.localtime(deckList[index]["modified_date"]))
+                time.localtime(deckList[index]["created_date"]))
             date = QTableWidgetItem(date_str)
             date.setToolTip(date_str)
             self.table_results.setItem(index, 3, date)
 
+    def getResultsDescription(self):
+        """return a description of search parameters"""
+        #if textfields are empty, return an error
+        if self.name == "" and self.user == "":
+            return "Error: Must have input to search!"
+        #search for deck name only
+        elif not self.name == "" and self.user == "":
+            return "Searching for \"{0}\" ...".format(self.name)
+        #search for deck name and user
+        elif not self.name == "" and not self.user == "":
+            return ("Searching for \"{0}\" by user <u>{1}</u> ..."
+                .format(self.name, self.user))
+        #search for user only
+        elif self.name == "" and not self.user == "":
+            return "Searching for decks by user <u>{0}</u> ...".format(self.user)
+
     def fetchResults(self, page=1):
         """load results"""
+
+        #if the page being fetched is the same as the current page,
+        #don't fetch it!
+        if page == self.result_page:
+            return
+
         global __APIKEY
 
         self.results = None
         self.hideTable()
-        self.label_results.setText("Searching for \"{0}\" ..."
-            .format(self.name))
+        self.label_results.setText(self.getResultsDescription())
+
+        #textfields are empty
+        if self.label_results.text() == "Error: Must have input to search!":
+            return
 
         #build search URL
+        search_url = "https://api.quizlet.com/2.0/search/sets"
+        search_url += "?q={0}".format(self.name)
         if not self.user == "":
-            search_url = ("https://api.quizlet.com/2.0/search/sets"
-                  "?q={0}"
-                  "&creator={1}"
-                  "&page={2}"
-                  "&per_page={3}"
-                  "&client_id={4}")
-        else:
-            search_url = ("https://api.quizlet.com/2.0/search/sets"
-                  "?q={0}"
-                  "&page={2}"
-                  "&per_page={3}"
-                  "&client_id={4}")
-
-        search_url = search_url.format(self.name, self.user, page,
-            QuizletWindow.RESULTS_PER_PAGE, QuizletWindow.__APIKEY)
+            search_url += "&creator={0}".format(self.user)
+        search_url += "&page={0}".format(page)
+        search_url += "&per_page={0}".format(QuizletWindow.RESULTS_PER_PAGE)
+        search_url += "&sort={0}".format(self.sort)
+        search_url += "&client_id={0}".format(QuizletWindow.__APIKEY)
 
         #stop the previous thread first
         if not self.thread == None:
@@ -361,14 +373,17 @@ class QuizletWindow(QWidget):
             self.button_current.setText(" ")
             self.label_results.setText( ("No results found!") )
         else:
-            first = ((page-1)*50)+1
-            last = page*QuizletWindow.RESULTS_PER_PAGE
             num_results = self.results["total_results"]
+            first = ((page-1)*50)+1
+            last = (page*QuizletWindow.RESULTS_PER_PAGE
+                if page*QuizletWindow.RESULTS_PER_PAGE < num_results
+                else num_results)
             self.result_page = page
             self.button_current.setText(str(page))
             self.label_results.setText( ("Displaying results {0} - {1} of {2}."
                 .format(first, last, num_results)) )
             self.table_results.verticalHeader().setOffset(first)
+
 
 class QuizletDownloader(QThread):
     """thread that downloads results from the Quizlet API"""
@@ -383,9 +398,13 @@ class QuizletDownloader(QThread):
     def run(self):
         """run thread; download results!"""
         try:
-            self.results = json.loads(url2.urlopen(self.url).read())
+            self.results = json.load(url2.urlopen(self.url))
         except url2.URLError:
             self.error = True
+        else:
+            #if no results, there was an error
+            if self.results == None:
+                self.error = True
 
 
 def runQuizletPlugin():
