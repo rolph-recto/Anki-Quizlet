@@ -10,7 +10,6 @@
 #-------------------------------------------------------------------------------
 #!/usr/bin/env python
 
-run = True
 __window = None
 
 import sys
@@ -20,17 +19,13 @@ import urllib as url
 import urllib2 as url2
 import json
 
-#AnkiQT
+#Anki
 from aqt import mw
 from aqt.qt import *
 
-#make sure the PyQT library exists
-try:
-    from PyQt4.QtGui import *
-    from PyQt4.Qt import Qt
-#don't run plugin
-except ImportError:
-    run = False
+#PyQT
+from PyQt4.QtGui import *
+from PyQt4.Qt import Qt
 
 class QuizletWindow(QWidget):
     PAGE_FIRST       = 1
@@ -247,6 +242,7 @@ class QuizletWindow(QWidget):
         #clear table first
         self.table_results.setRowCount(0)
         deckList = self.results["sets"]
+
         for index in range(len(deckList)):
             if index+1 > self.table_results.rowCount():
                 self.table_results.insertRow(index)
@@ -297,11 +293,19 @@ class QuizletWindow(QWidget):
                   "&client_id={4}").format(name, user, page,
                   QuizletWindow.RESULTS_PER_PAGE, QuizletWindow.__APIKEY)
 
-        #fetch the data!
-        try:
-            self.results = json.loads(url2.urlopen(search_url).read())
-        except url2.URLError:
+        self.thread = QuizletDownloader(self, search_url)
+        self.thread.start()
+
+        while not self.thread.isFinished():
+            mw.app.processEvents()
+            self.thread.wait(100)
+
+        self.results = self.thread.results
+
+        #error with fetching data; don't display table
+        if self.thread.error:
             self.setPage(QuizletWindow.RESULT_ERROR)
+        #everything went through!
         else:
             self.setPage(page)
             self.loadResultsToTable()
@@ -322,17 +326,34 @@ class QuizletWindow(QWidget):
             self.label_results.setText( ("Displaying results {0} - {1} of {2}."
                 .format(first, last, num_results)) )
 
+class QuizletDownloader(QThread):
+    """thread that downloads results from the Quizlet API"""
+
+    def __init__(self, window, url):
+        super(QuizletDownloader, self).__init__()
+        self.window=window
+        self.url = url
+        self.error = False
+        self.results = None
+
+    def run(self):
+        """run thread; download results!"""
+
+        #fetch the data!
+        try:
+            self.results = json.loads(url2.urlopen(self.url).read())
+        except url2.URLError:
+            self.error = True
+
 
 def runQuizletPlugin():
     """menu item pressed; display search window"""
     global __window
     __window = QuizletWindow()
 
-#only run the addon if the PyQT library exists
-if run:
-    # create a new menu item, "Import from Quizlet"
-    action = QAction("Import from Quizlet", mw)
-    # set it to call function when it's clicked
-    mw.connect(action, SIGNAL("triggered()"), runQuizletPlugin)
-    # and add it to the tools menu
-    mw.form.menuTools.addAction(action)
+# create a new menu item, "Import from Quizlet"
+action = QAction("Import from Quizlet", mw)
+# set it to call function when it's clicked
+mw.connect(action, SIGNAL("triggered()"), runQuizletPlugin)
+# and add it to the tools menu
+mw.form.menuTools.addAction(action)
