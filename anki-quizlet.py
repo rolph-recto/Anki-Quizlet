@@ -1,6 +1,6 @@
 #-------------------------------------------------------------------------------
-# Name:        Quizlet plugin for Anki
-# Purpose:     Import decks from Quizlet.com into Anki
+# Name:        Quizlet plugin for Anki 2.0
+# Purpose:     Import decks from Quizlet.com into Anki 2.0
 #
 # Author:      Rolph Recto
 #
@@ -27,6 +27,24 @@ from aqt.qt import *
 #PyQT
 from PyQt4.QtGui import *
 from PyQt4.Qt import Qt
+
+#copied straight from anki.stdmodels
+#it is necessary to create a custom model
+#because the user might have changed the default model
+def addCustomModel(name, col):
+    """create a new custom model for the imported deck"""
+    mm = col.models
+    m = mm.new(_("Basic")+" ({0})".format(name))
+    fm = mm.newField(_("Front"))
+    mm.addField(m, fm)
+    fm = mm.newField(_("Back"))
+    mm.addField(m, fm)
+    t = mm.newTemplate(_("Card 1"))
+    t['qfmt'] = _("{{Front}}")
+    t['afmt'] = "{{FrontSide}}\n\n<hr id=answer>\n\n"+_("{{Back}}")
+    mm.addTemplate(m, t)
+    mm.add(m)
+    return m
 
 class QuizletWindow(QWidget):
     """main window of Quizlet plugin; shows search results"""
@@ -184,6 +202,8 @@ class QuizletWindow(QWidget):
         self.box_import.addStretch(1)
         self.box_import.addWidget(self.button_import)
 
+        self.button_import.clicked.connect(self.onImportDeck)
+
         #add all widgets to top layout
         self.box_top.addLayout(self.box_upper)
         self.box_top.addLayout(self.box_tablenav)
@@ -213,6 +233,77 @@ class QuizletWindow(QWidget):
             self.sort = "most_recent"
 
         self.fetchResults()
+
+    def onImportDeck(self):
+        """user clicked Import Deck button, load the deck from Quizlet"""
+        #find the selected deck in the table
+        index = self.table_results.currentRow()
+
+        #set the GUI
+        self.hideTable()
+        self.button_search.setEnabled(False)
+        self.label_results.setText( ("Importing deck <b>{0}</b> ..."
+            .format(self.results["sets"][index]["title"])) )
+
+        #build URL
+        deck_url = ("https://api.quizlet.com/2.0/sets/{0}/terms".
+            format(self.results["sets"][index]["id"]))
+
+        deck_url += "?client_id={0}".format(QuizletWindow.__APIKEY)
+
+        #stop the previous thread first
+        if not self.thread == None:
+            self.thread.terminate()
+
+        #download the data!
+        self.thread = QuizletDownloader(self, deck_url)
+        self.thread.start()
+
+        while not self.thread.isFinished():
+            mw.app.processEvents()
+            self.thread.wait(50)
+
+        #error with fetching data
+        if self.thread.error:
+            self.label_results.setText( ("Failed to load deck <b>{0}</b>!"
+                .format(self.results["sets"][index]["title"])) )
+        #everything went through!
+        else:
+            terms = self.thread.results
+            self.createDeck(self.results["sets"][index]["title"], terms)
+
+            self.showTable()
+            self.button_search.setEnabled(True)
+            self.label_results.setText( ("Successfully imported deck <b>{0}</b>."
+                .format(self.results["sets"][index]["title"])) )
+
+        self.thread.terminate()
+        self.thread = None
+
+    def createDeck(self, name, terms):
+        """create new Anki deck from downloaded data"""
+        #create new deck and custom model
+        deck = mw.col.decks.get(mw.col.decks.id(name))
+        model = addCustomModel(name, mw.col)
+
+        #assign custom model to new deck
+        mw.col.decks.select(deck["id"])
+        mw.col.decks.get(deck)["mid"] = model["id"]
+        mw.col.decks.save(deck)
+
+        #assign new deck to custom model
+        mw.col.models.setCurrent(model)
+        mw.col.models.current()["did"] = deck["id"]
+        mw.col.models.save(model)
+
+        for term in terms:
+            note = mw.col.newNote()
+            note["Front"] = term["term"]
+            note["Back"] = term["definition"]
+            mw.col.addNote(note)
+
+        mw.col.reset()
+        mw.reset()
 
     def onPageFirst(self):
         """first page button clicked"""
@@ -320,8 +411,7 @@ class QuizletWindow(QWidget):
 
         #if the page being fetched is the same as the current page,
         #don't fetch it!
-        if page == self.result_page:
-            return
+        if page == self.result_page: return
 
         global __APIKEY
 
@@ -365,6 +455,9 @@ class QuizletWindow(QWidget):
             self.setPage(page)
             self.loadResultsToTable()
             self.showTable()
+
+        self.thread.terminate()
+        self.thread = None
 
     def setPage(self, page):
         """set page of results to load"""
